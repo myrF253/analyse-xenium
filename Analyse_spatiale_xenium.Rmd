@@ -1,0 +1,215 @@
+---
+title: "Analyse des données de Transcriptomique Spacial Xenium de 10X Génomique"
+author: "Myriam Feumi Bathanga & Emna Trigui & Yasmine Gbian Sinakouro"
+date: "2026-04-25"
+output: html_document
+---
+
+
+```{r}
+library(Seurat)
+library(hdf5r)
+library(ggplot2)
+library(arrow)
+library(dplyr)
+library(patchwork)
+library(ape)
+```
+
+Importaion et traitement des données en utilisant la library arrow
+```{r}
+rep1 <- LoadXenium(data.dir = "C:/Users/myria/Documents/Rep1",
+                   fov = "fov")
+# Retirer les replicats avec 0 counts
+rep1 <- subset(rep1, subset = nCount_Xenium > 0)
+
+rep2 <- LoadXenium(data.dir = "C:/Users/myria/Documents/Rep2",
+                   fov = "fov")
+# Retirer les replicats avec 0 counts
+rep2 <- subset(rep2, subset = nCount_Xenium > 0)
+```
+
+Organisation de nos objets Seurat
+```{r}
+rep1$orig.ident <- "Replicat_1"
+rep2$orig.ident <- "Replicat_2"
+```
+
+Fusionner nos deux objets rep1 et rep2 et observer leur conposition en gènes et en cellules
+```{r}
+merged_qc = merge(rep1, rep2)
+#composition du nouvel onjet fusionné (nombre de gènes et de cellules)
+dim(merged_qc)
+#compoisition dans chacun des replicats fussionés
+table(merged_qc$orig.ident)
+```
+
+Visualiser les données avant le filtre 
+```{r}
+p_avant_filtre = VlnPlot(
+  merged_qc, 
+  features = c("nFeature_Xenium", "nCount_Xenium"), 
+  group.by = "orig.ident", # Aligne Rep1, Rep2 côte à côte
+  ncol = 2, 
+  pt.size = 0,
+  same.y.lims = FALSE
+)  + plot_annotation(
+  title = "État des données Avant filtre"
+)
+
+p_avant_filtre 
+
+```
+
+Controle qualité des données pour filtrer les données avec peut de pertinances biologiques et limiter les bruits
+```{r}
+merged_filtered <- subset(merged_qc, subset = nFeature_Xenium > 25 & nFeature_Xenium < 130 & nCount_Xenium < 520)
+
+dim(merged_filtered)
+table(merged_filtered$orig.ident)
+```
+
+Visualiser les données parès le QC
+```{r}
+p_apres_filtre = VlnPlot(
+  merged_filtered, 
+  features = c("nFeature_Xenium", "nCount_Xenium"), 
+  group.by = "orig.ident", # Aligne Rep1, Rep2 côte à côte
+  ncol = 2, 
+  pt.size = 0,
+  same.y.lims = FALSE
+)  + plot_annotation(
+  title = "État des données Après filtre"
+)
+
+p_apres_filtre 
+```
+
+Normalisation des données avec SCTransform
+```{r}
+merged_filtered <- SCTransform(merged_filtered, assay = "Xenium")
+```
+
+Réduction de dimmention avec PCA
+```{r}
+merged_filtered <- RunPCA(merged_filtered, assay = "SCT", verbose = FALSE)
+```
+
+Visualisation elbowPlot des PCs
+```{r}
+ElbowPlot(merged_filtered)
+```
+
+Réduction de dimmention avec  UMAP et clustering.
+```{r}
+merged_filtered <- RunUMAP(merged_filtered, dims = 1:20)
+merged_filtered <- FindNeighbors(merged_filtered, reduction = "pca", dims = 1:20)
+merged_filtered <- FindClusters(merged_filtered, resolution = 0.5)
+```
+
+Visualisation UMAP
+```{r}
+DimPlot(merged_filtered, raster = FALSE, cols = 'glasbey') + DarkTheme() +coord_fixed()
+
+dim(merged_filtered)
+```
+
+Observer le nombre de cellules dans chaque cluster
+```{r}
+n_cells <- as.data.frame(table(Idents(merged_filtered)))
+colnames(n_cells) <- c("Cluster", "Nombre_de_Cellules")
+print(n_cells)
+```
+
+Identification des markers des différents clusters et visualistaion
+```{r}
+genes_ident = list(
+ Turmorales = c("FASN", "FOXA1", "GATA3"),
+ Myoépithélial = c("KRT15", "ACTA2", "MYLK"),
+ Stroma = c("POSTN", "MMP2"),
+ Immunitaire = c("CD8A", "CD4", "MS4A1", "CD68"),
+ endothéliales = c("PECAM1", "VWF", "AQP1")
+)
+
+dot2 = DotPlot(merged_filtered, features = genes_ident) + RotatedAxis()
+dot2
+
+```
+
+
+Identifier les différents cluster à partir des markers et visualisation
+```{r}
+new_names <- c(
+  "0" = "Tumoral", "2" = "Stroma", 
+  "3" = "Endothelial", "4" = "Macrophages", "5" = "T_Cells",
+  "6" = "Tumoral", "7" = "Myoepithelial", "8" = "Tumoral",
+  "9" = "Myoepithelial", "10" = "Tumoral", "11" = "Tumoral",
+  "12" = "Endothelial", "13" = "Myoepithelial", "14" = "B_Cells",
+  "15" = "Stroma", "16" = "Stroma"
+)
+
+merged_filtered <- RenameIdents(merged_filtered, new_names)
+
+DimPlot(merged_filtered, reduction = "umap", label = TRUE)
+```
+
+Visualisation du microenvironnement tissulaire (visualisation globale)
+```{r}
+imtissu = ImageDimPlot(merged_filtered, axes = TRUE, cols = 'glasbey') + DarkTheme()
+
+imtissu
+```
+
+Visualiser comment les cellules s'étendes dans le tissu (de la dispersion de chaque type cellulaire dans le tissus)
+```{r}
+ImageDimPlot(merged_filtered, 
+             split.by = "ident",
+             axes = TRUE,
+             cols = "polychrome", 
+             size = 0.5,            
+             dark.background = TRUE)
+```
+
+Zoomer sur certaines zones spéciphique pour mieux apprécier la localisation des cellules
+```{r}
+ImageDimPlot(merged_filtered, fov = "fov", axes = TRUE, size = 1.5) + 
+  coord_fixed(xlim = c(0, 6000), ylim = c(0, 4000))
+#les coordonnées x et y en fonction de la zone que l,on veux observée à partir du plot de visualisation global.
+```
+
+
+Calcul et représentation graphique des proportions de chaque types cellulaires dans la coupe tissulaire
+```{r}
+prop.table(table(Idents(merged_filtered))) * 100
+
+df_stats <- as.data.frame(prop.table(table(Idents(merged_filtered))) * 100)
+colnames(df_stats) <- c("Type_Cellulaire", "Pourcentage")
+
+# Créer le barplot  du pourcentage de chaque types cellulaire dans ce tssu
+ggplot(df_stats, aes(x = Type_Cellulaire, y = Pourcentage, fill = Type_Cellulaire)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(title = "Composition Cellulaire de l'Échantillon (n = 264,749)",
+       y = "Pourcentage (%)", x = "") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
